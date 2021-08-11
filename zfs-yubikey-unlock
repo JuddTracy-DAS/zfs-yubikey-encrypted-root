@@ -1,0 +1,68 @@
+#!/bin/sh
+
+set -e
+
+if [ ! -e /run/zfs_fs_name ]; then
+	echo "Wait for the root pool to be imported or press Ctrl-C to exit."
+fi
+while [ ! -e /run/zfs_fs_name ]; do
+	echo "zfs-yubikey-unlock"
+	if [ -e /run/zfs_unlock_complete ]; then
+		exit 0
+	fi
+	sleep 1
+done
+
+echo "ZFS Root pool has been imported"
+
+. /etc/zfs-yubikey.cfg
+
+if [ -z "$CHALLENGE" -a -z "$CHALLENGE_FILE" ]; then
+	exit 0
+fi
+
+if [ -z "$CHALLENGE_FILE" ]; then
+	CHALLENGE_FILE="-"
+elif [ ! -e "$CHALLENGE_FILE" ]; then
+        if [ -z "$CHALLENGE" ]; then
+                exit 0
+        else
+                CHALLENGE_FILE="-"
+        fi
+fi
+
+if [ -z "$YUBIKEYS" ]; then
+	YUBIKEYS="0:2"
+fi
+
+zfs_fs_name=""
+if [ ! -e /run/zfs_unlock_complete_notify ]; then
+	mkfifo /run/zfs_unlock_complete_notify
+fi
+while [ ! -e /run/zfs_unlock_complete ]; do
+	zfs_fs_name=$(cat /run/zfs_fs_name)
+	zfs_console_askpwd_cmd=$(cat /run/zfs_console_askpwd_cmd)
+	for YUBIKEY in $YUBIKEYS; do
+		yubikey_id=${YUBIKEY%:*}
+		yubikey_slot=${YUBIKEY#*:}
+		yubikey_present=$(ykinfo -q -n${yubikey_id} -${yubikey_slot} 2>/dev/null)
+		if [ "$yubikey_present" != "1" ]; then
+			continue
+		fi
+		echo "$CHALLENGE" | ykchalresp -n${yubikey_id} -${yubikey_slot} -i${CHALLENGE_FILE}  | \
+			/sbin/zfs load-key "$zfs_fs_name" || true
+		if [ "$(/sbin/zfs get -H -ovalue keystatus "$zfs_fs_name" 2> /dev/null)" = "available" ]; then
+			echo "Password for $zfs_fs_name accepted."
+			zfs_console_askpwd_pid=$(ps | awk '!'"/awk/ && /$zfs_console_askpwd_cmd/ { print \$1; exit }")
+			if [ -n "$zfs_console_askpwd_pid" ]; then
+				kill "$zfs_console_askpwd_pid"
+			fi
+			# Wait for another filesystem to unlock.
+			while [ "$(cat /run/zfs_fs_name)" = "$zfs_fs_name" ] && [ ! -e /run/zfs_unlock_complete ]; do
+				sleep 1
+			done
+		fi
+	done
+done
+echo "Unlocking complete.  Resuming boot sequence..."
+echo "ok" > /run/zfs_unlock_complete_notify

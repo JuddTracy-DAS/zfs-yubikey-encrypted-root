@@ -1,0 +1,53 @@
+#! /bin/sh
+
+. /etc/zfs-yubikey.cfg
+
+echo "Encrypting the zfs root fileystem"
+
+modprobe zfs
+
+zpool import -f rpool
+
+if [ -z "$CHALLENGE" -a -z "$CHALLENGE_FILE" ]; then
+        exit 0
+fi
+
+if [ -z "$CHALLENGE_FILE" ]; then
+	CHALLENGE_FILE="-"
+elif [ ! -e "$CHALLENGE_FILE" ]; then
+        if [ -z "$CHALLENGE" ]; then
+                exit 0
+        else
+                CHALLENGE_FILE="-"
+        fi
+fi
+
+if [ -z "$YUBIKEY" ]; then
+        YUBIKEY="0:2"
+fi
+
+yubikey_id=${YUBIKEY%:*}
+yubikey_slot=${YUBIKEY#*:}
+yubikey_present=$(ykinfo -q -n${yubikey_id} -${yubikey_slot} 2>/dev/null)
+while [ "$yubikey_present" != "1" ]; do
+	echo "Waiting for yubkiey"
+	sleep 1
+	yubikey_present=$(ykinfo -q -n${yubikey_id} -${yubikey_slot} 2>/dev/null)
+done
+
+if [ -z "$ENCRYPTION_ALGO" ]; then
+	ENCRYPTION_ALGO=on
+fi
+
+zfs snapshot -r rpool/ROOT@copy
+zfs send -R rpool/ROOT@copy | zfs receive rpool/copyroot
+zfs destroy -r rpool/ROOT
+
+echo "$CHALLENGE" | ykchalresp -2 -i${CHALLENGE_FILE} | zfs create -o keyformat=passphrase -o encryption=${ENCRYPTION_ALGO} rpool/ROOT
+zfs send -R rpool/copyroot/pve-1@copy | zfs receive -o encryption=${ENCRYPTION_ALGO} rpool/ROOT/pve-1
+zfs set mountpoint=/ rpool/ROOT/pve-1
+
+zfs destroy -r rpool/copyroot
+zfs destroy rpool/ROOT/pve-1@copy
+
+zpool export rpool

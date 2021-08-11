@@ -1,0 +1,26 @@
+#!/bin/sh
+
+PREREQ="zfs"
+
+prereqs() {
+    echo "$PREREQ"
+}
+
+case "$1" in
+    prereqs)
+        prereqs
+        exit 0
+    ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+copy_exec /usr/bin/ykchalresp
+copy_exec /usr/bin/ykinfo
+copy_exec /usr/share/initramfs-tools/zfs-yubikey-unlock /usr/bin/zfs-yubikey-unlock
+cp /etc/zfs-yubikey.cfg "${DESTDIR}/etc/zfs-yubikey.cfg"
+
+copy_exec /usr/share/initramfs-tools/zfs-yubikey-encrypt-root /usr/bin/zfs-yubikey-encrypt-root
+#chmod 755 /usr/share/initramfs-tools/zfs-yubikey-encrypt-root
+
+exit 0
